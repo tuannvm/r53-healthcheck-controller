@@ -6,11 +6,14 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/spotahome/kooper/log"
 	"github.com/spotahome/kooper/operator/controller"
 	"github.com/spotahome/kooper/operator/handler"
 	"github.com/spotahome/kooper/operator/retrieve"
-	corev1 "k8s.io/api/core/v1"
+	"github.com/tuannvm/tools/pkg/awsutils"
+	extensionv1beta1 "k8s.io/api/extensions/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
@@ -22,11 +25,13 @@ import (
 	"k8s.io/client-go/util/homedir"
 )
 
+// r53.kubernetes.io/enable: true
 func main() {
+
+	client := awsutils.New(&aws.Config{})
 	// Initialize logger.
 	log := &log.Std{}
 
-	// Get k8s client.
 	k8scfg, err := rest.InClusterConfig()
 	if err != nil {
 		// No in cluster? letr's try locally
@@ -37,21 +42,24 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	k8scli, err := kubernetes.NewForConfig(k8scfg)
+	k8scli, err := kubernetes.NewForConfig(&rest.Config{
+		Host: "http://127.0.0.1:8001",
+	})
 	if err != nil {
 		log.Errorf("error creating kubernetes client: %s", err)
 		os.Exit(1)
 	}
 
 	// Create our retriever so the controller knows how to get/listen for pod events.
+	// atm there is no way to do something like annotation selector as annotations are unqueriable by design
 	retr := &retrieve.Resource{
-		Object: &corev1.Pod{},
+		Object: &extensionv1beta1.Ingress{},
 		ListerWatcher: &cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-				return k8scli.CoreV1().Pods("").List(options)
+				return k8scli.ExtensionsV1beta1().Ingresses("").List(options)
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-				return k8scli.CoreV1().Pods("").Watch(options)
+				return k8scli.ExtensionsV1beta1().Ingresses("").Watch(options)
 			},
 		},
 	}
@@ -59,12 +67,19 @@ func main() {
 	// Our domain logic that will print every add/sync/update and delete event we .
 	hand := &handler.HandlerFunc{
 		AddFunc: func(_ context.Context, obj runtime.Object) error {
-			pod := obj.(*corev1.Pod)
-			log.Infof("Pod added: %s/%s", pod.Namespace, pod.Name)
+			ingress := obj.(*extensionv1beta1.Ingress)
+			for k, v := range ingress.Annotations {
+				if k == "r53.kubernetes.io/enable" && v == "true" {
+					client.Route53.CreateHealthCheckWithContext(client.Context, &route53.CreateHealthCheckInput{
+						HealthCheckConfig: &route53.HealthCheckConfig{},
+					})
+					log.Infof("healthcheck added: %s/%s", ingress.Annotations, ingress.Name)
+				}
+			}
 			return nil
 		},
 		DeleteFunc: func(_ context.Context, s string) error {
-			log.Infof("Pod deleted: %s", s)
+			log.Infof("healthcheck deleted: %s", s)
 			return nil
 		},
 	}
