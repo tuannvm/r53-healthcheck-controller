@@ -42,9 +42,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	k8scli, err := kubernetes.NewForConfig(&rest.Config{
-		Host: "http://127.0.0.1:8001",
-	})
+	k8scli, err := kubernetes.NewForConfig(k8scfg)
 	if err != nil {
 		log.Errorf("error creating kubernetes client: %s", err)
 		os.Exit(1)
